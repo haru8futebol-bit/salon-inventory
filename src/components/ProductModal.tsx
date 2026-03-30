@@ -84,11 +84,11 @@ export default function ProductModal({ product, products, onClose, onSave }: Pro
             <label style={s.label}>薬剤名</label>
             {!product && (
               <div style={s.btnRow}>
-                <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                  onChange={e => e.target.files?.[0] && handleOcr(e.target.files[0])} />
-                <button style={s.subBtn} onClick={() => fileRef.current?.click()} disabled={ocrLoading}>
+                <label style={{ ...s.subBtn, textAlign: 'center', cursor: 'pointer', opacity: ocrLoading ? 0.6 : 1 }}>
+                  <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                    onChange={e => e.target.files?.[0] && handleOcr(e.target.files[0])} />
                   {ocrLoading ? '読み取り中...' : '📷 撮影'}
-                </button>
+                </label>
                 <button style={s.subBtn} onClick={() => setShowScanner(true)}>
                   〒 バーコード
                 </button>

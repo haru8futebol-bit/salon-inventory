@@ -237,7 +237,7 @@ export default function App() {
         <div style={s.headerLeft}>
           <div style={s.avatar}>💊</div>
           <div>
-            <p style={s.headerName}>在庫アシスタント</p>
+            <p style={s.headerName}>在庫管理アシスタント</p>
             <p style={s.headerSub}>薬剤在庫管理</p>
           </div>
         </div>
