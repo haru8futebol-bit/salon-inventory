@@ -84,8 +84,9 @@ export default function ProductModal({ product, products, onClose, onSave }: Pro
             <label style={s.label}>薬剤名</label>
             {!product && (
               <div style={s.btnRow}>
-                <label style={{ ...s.subBtn, textAlign: 'center', cursor: 'pointer', opacity: ocrLoading ? 0.6 : 1 }}>
-                  <input ref={fileRef} type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
+                <label style={{ ...s.subBtn, textAlign: 'center', cursor: 'pointer', opacity: ocrLoading ? 0.6 : 1, position: 'relative', overflow: 'hidden' }}>
+                  <input ref={fileRef} type="file" accept="image/*" capture="environment"
+                    style={{ position: 'absolute', width: '100%', height: '100%', top: 0, left: 0, opacity: 0, cursor: 'pointer' }}
                     onChange={e => e.target.files?.[0] && handleOcr(e.target.files[0])} />
                   {ocrLoading ? '読み取り中...' : '📷 撮影'}
                 </label>
