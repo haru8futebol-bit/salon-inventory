@@ -41,6 +41,8 @@ export default function ProductModal({ product, products, onClose, onSave, onDel
 
   const handleOcr = async (file: File) => {
     setOcrLoading(true); setHint('')
+    // 撮影した写真をそのまま商品写真にも反映
+    handlePhotoUpload(file)
     try {
       const { data, mediaType } = await fileToBase64(file)
       const result = await extractProductFromImage(data, mediaType)
