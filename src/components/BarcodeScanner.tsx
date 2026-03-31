@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Html5QrcodeScanner, Html5QrcodeScanType } from 'html5-qrcode'
+import { Html5Qrcode } from 'html5-qrcode'
 
 interface Props {
   onScan: (code: string) => void
@@ -7,36 +7,38 @@ interface Props {
 }
 
 export default function BarcodeScanner({ onScan, onClose }: Props) {
-  const scannerRef = useRef<Html5QrcodeScanner | null>(null)
-  const mounted = useRef(true)
+  const scannerRef = useRef<Html5Qrcode | null>(null)
+  const calledRef = useRef(false)
 
   useEffect(() => {
-    mounted.current = true
-    const scanner = new Html5QrcodeScanner(
-      'barcode-reader',
-      {
-        fps: 10,
-        qrbox: { width: 280, height: 120 },
-        supportedScanTypes: [Html5QrcodeScanType.SCAN_TYPE_CAMERA],
-        showTorchButtonIfSupported: true,
-      },
-      false
-    )
-
-    scanner.render(
-      (decodedText) => {
-        if (!mounted.current) return
-        scanner.clear().catch(() => {})
-        onScan(decodedText)
-      },
-      () => {} // スキャン失敗は無視
-    )
-
+    calledRef.current = false
+    const scanner = new Html5Qrcode('barcode-reader')
     scannerRef.current = scanner
 
+    const handleScan = (decodedText: string) => {
+      if (calledRef.current) return
+      calledRef.current = true
+      scanner.stop().catch(() => {}).finally(() => onScan(decodedText))
+    }
+
+    // 背面カメラを強制（選択画面を出さない）
+    scanner.start(
+      { facingMode: { exact: 'environment' } },
+      { fps: 10, qrbox: { width: 280, height: 120 } },
+      handleScan,
+      () => {}
+    ).catch(() => {
+      // environment が使えない端末はデフォルトにフォールバック
+      scanner.start(
+        { facingMode: 'environment' },
+        { fps: 10, qrbox: { width: 280, height: 120 } },
+        handleScan,
+        () => {}
+      ).catch(() => {})
+    })
+
     return () => {
-      mounted.current = false
-      scannerRef.current?.clear().catch(() => {})
+      scanner.stop().catch(() => {})
     }
   }, [onScan])
 
@@ -65,10 +67,10 @@ const s: Record<string, React.CSSProperties> = {
   },
   handle: { width: 40, height: 4, background: '#e2e8f0', borderRadius: 99, margin: '0 auto 16px' },
   title: { fontSize: 18, fontWeight: 800, marginBottom: 6, textAlign: 'center' },
-  sub: { fontSize: 13, color: 'var(--text-sub)', marginBottom: 16, textAlign: 'center' },
+  sub: { fontSize: 13, color: '#888', marginBottom: 16, textAlign: 'center' },
   reader: { borderRadius: 16, overflow: 'hidden', marginBottom: 16 },
   cancelBtn: {
     width: '100%', padding: '13px', borderRadius: 16, fontSize: 15, fontWeight: 600,
-    background: '#f1f0f7', color: 'var(--text-sub)',
+    background: '#f1f0f7', color: '#888',
   },
 }

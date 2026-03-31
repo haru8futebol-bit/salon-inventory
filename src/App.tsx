@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './supabase'
-import { Product, UsageLog, Recipe } from './types'
+import { Product, UsageLog, Recipe, Order } from './types'
 import ProductModal from './components/ProductModal'
 import UsageModal from './components/UsageModal'
 import RestockModal from './components/RestockModal'
@@ -9,6 +9,7 @@ import VoiceInputButton from './components/VoiceInputButton'
 import StockCountModal from './components/StockCountModal'
 import RecipeModal from './components/RecipeModal'
 import RecipeListModal from './components/RecipeListModal'
+import OrderCreateModal from './components/OrderCreateModal'
 
 type Modal =
   | { type: 'add' }
@@ -20,8 +21,9 @@ type Modal =
   | { type: 'recipeList' }
   | { type: 'recipeAdd' }
   | { type: 'recipeEdit'; recipe: Recipe }
+  | { type: 'orderCreate'; product: Product }
 
-type Tab = 'stock' | 'recipe' | 'alert'
+type Tab = 'stock' | 'recipe' | 'order' | 'alert'
 
 async function sendLineNotification(message: string) {
   const url = import.meta.env.VITE_SUPABASE_URL
@@ -40,6 +42,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([])
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [recipes, setRecipes] = useState<Recipe[]>([])
+  const [orders, setOrders] = useState<Order[]>([])
   const [modal, setModal] = useState<Modal | null>(null)
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState<Tab>('stock')
@@ -51,27 +54,28 @@ export default function App() {
   }
 
   const fetchData = useCallback(async () => {
-    const [{ data: p }, { data: l }, { data: r }] = await Promise.all([
+    const [{ data: p }, { data: l }, { data: r }, { data: o }] = await Promise.all([
       supabase.from('products').select('*').order('created_at'),
       supabase.from('usage_logs').select('*, products(name)').order('used_at', { ascending: false }).limit(100),
       supabase.from('recipes').select('*, recipe_items(*, products(name, stock))').order('created_at'),
+      supabase.from('orders').select('*, products(name)').order('ordered_at', { ascending: false }),
     ])
     setProducts(p ?? [])
     setLogs(l ?? [])
     setRecipes(r ?? [])
+    setOrders(o ?? [])
     setLoading(false)
     return p ?? []
   }, [])
 
   useEffect(() => { fetchData() }, [fetchData])
 
-  // ── 薬剤 CRUD ──────────────────────────────────
-  const handleAddOrEdit = async (name: string, stock: number, threshold: number, barcode: string) => {
+  const handleAddOrEdit = async (name: string, stock: number, threshold: number, barcode: string, imageUrl: string) => {
     if (modal?.type === 'edit') {
-      await supabase.from('products').update({ name, stock, threshold, barcode: barcode || null }).eq('id', modal.product.id)
+      await supabase.from('products').update({ name, stock, threshold, barcode: barcode || null, image_url: imageUrl || null }).eq('id', modal.product.id)
       showToast(`「${name}」を更新しました`)
     } else {
-      await supabase.from('products').insert({ name, stock, threshold, barcode: barcode || null })
+      await supabase.from('products').insert({ name, stock, threshold, barcode: barcode || null, image_url: imageUrl || null })
       showToast(`「${name}」を登録しました`)
     }
     setModal(null)
@@ -88,9 +92,9 @@ export default function App() {
     ])
     setModal(null)
     await fetchData()
-    showToast(`${product.name} ${quantity}本 使用記録しました`)
+    showToast(`${product.name} ${quantity}本 使用しました`)
     if (newStock < product.threshold) {
-      sendLineNotification(`⚠️ 在庫アラート\n「${product.name}」残り${newStock}本（閾値${product.threshold}本）`)
+      sendLineNotification(`⚠️ 在庫アラート\n「${product.name}」残り${newStock}本（発注ライン${product.threshold}本）`)
     }
   }
 
@@ -110,11 +114,39 @@ export default function App() {
   const handleDelete = async (product: Product) => {
     if (!confirm(`「${product.name}」を削除しますか？`)) return
     await supabase.from('products').delete().eq('id', product.id)
+    setModal(null)
     fetchData()
     showToast(`「${product.name}」を削除しました`)
   }
 
-  // ── レシピ ─────────────────────────────────────
+  const handleCreateOrder = async (quantity: number) => {
+    if (modal?.type !== 'orderCreate') return
+    const product = modal.product
+    await supabase.from('orders').insert({ product_id: product.id, quantity, status: '発注中' })
+    setModal(null)
+    fetchData()
+    showToast(`「${product.name}」${quantity}本 発注しました`)
+    setTab('order')
+  }
+
+  const handleReceiveOrder = async (order: Order) => {
+    const productName = order.products?.name ?? '商品'
+    if (!confirm(`「${productName}」${order.quantity}本を受け取りましたか？\n在庫に自動で加算されます。`)) return
+    const product = products.find(p => p.id === order.product_id)
+    const ps = [
+      supabase.from('orders').update({ status: '受け取り済み', received_at: new Date().toISOString() }).eq('id', order.id).then(() => {}),
+    ]
+    if (product) {
+      ps.push(
+        supabase.from('products').update({ stock: product.stock + order.quantity }).eq('id', product.id).then(() => {}),
+        supabase.from('usage_logs').insert({ product_id: product.id, quantity: order.quantity, note: '発注品受け取り', type: 'restock' }).then(() => {}),
+      )
+    }
+    await Promise.all(ps)
+    fetchData()
+    showToast(`${productName} ${order.quantity}本 在庫に加算しました`)
+  }
+
   const handleRecipeSave = async (name: string, memo: string, items: { product_id: string; quantity: string; unit: string; note: string }[]) => {
     if (modal?.type === 'recipeEdit') {
       await supabase.from('recipes').update({ name, memo: memo || null }).eq('id', modal.recipe.id)
@@ -145,7 +177,6 @@ export default function App() {
         return { product, item }
       })
       .filter(Boolean) as { product: Product; item: typeof recipe.recipe_items[0] }[]
-
     await Promise.all(
       updates.map(({ product, item }) => Promise.all([
         supabase.from('products').update({ stock: Math.max(0, product.stock - item.quantity) }).eq('id', product.id),
@@ -179,10 +210,16 @@ export default function App() {
   }
 
   const alerts = products.filter(p => p.stock < p.threshold)
+  const activeOrders = orders.filter(o => o.status === '発注中')
+  const receivedOrders = orders.filter(o => o.status === '受け取り済み')
+
+  const formatDate = (str: string) => {
+    const d = new Date(str)
+    return `${d.getMonth() + 1}/${d.getDate()}`
+  }
 
   return (
     <div style={s.page}>
-      {/* Header */}
       <header style={s.header}>
         <div style={s.headerLeft}>
           <div style={s.logo}>✂️</div>
@@ -192,43 +229,37 @@ export default function App() {
           </div>
         </div>
         <div style={s.headerRight}>
-          <button style={s.iconBtn} onClick={() => setModal({ type: 'history' })} title="履歴">📋</button>
-          <button style={s.iconBtn} onClick={() => setModal({ type: 'stockCount' })} title="写真で在庫確認">📷</button>
+          <button style={s.iconBtn} onClick={() => setModal({ type: 'history' })}>📋</button>
+          <button style={s.iconBtn} onClick={() => setModal({ type: 'stockCount' })}>📷</button>
         </div>
       </header>
 
-      {/* アラートバナー */}
       {alerts.length > 0 && (
         <div style={s.alertBanner} onClick={() => setTab('alert')}>
-          <span style={s.alertBannerIcon}>⚠️</span>
+          <span>⚠️</span>
           <span style={s.alertBannerText}>要発注 {alerts.length}件あります</span>
           <span style={s.alertBannerArrow}>›</span>
         </div>
       )}
 
-      {/* タブ */}
       <div style={s.tabBar}>
-        <button style={{ ...s.tab, ...(tab === 'stock' ? s.tabActive : {}) }} onClick={() => setTab('stock')}>
-          📦 在庫一覧
-        </button>
-        <button style={{ ...s.tab, ...(tab === 'recipe' ? s.tabActive : {}) }} onClick={() => setTab('recipe')}>
-          🧪 レシピ
+        <button style={{ ...s.tab, ...(tab === 'stock' ? s.tabActive : {}) }} onClick={() => setTab('stock')}>📦 在庫</button>
+        <button style={{ ...s.tab, ...(tab === 'recipe' ? s.tabActive : {}) }} onClick={() => setTab('recipe')}>🧪 レシピ</button>
+        <button style={{ ...s.tab, ...(tab === 'order' ? s.tabActive : {}) }} onClick={() => setTab('order')}>
+          📋 発注{activeOrders.length > 0 && <span style={s.tabBadge}>{activeOrders.length}</span>}
         </button>
         {alerts.length > 0 && (
           <button style={{ ...s.tab, ...(tab === 'alert' ? s.tabActive : {}), ...s.tabAlert }} onClick={() => setTab('alert')}>
-            ⚠️ 要発注
-            <span style={s.tabBadge}>{alerts.length}</span>
+            ⚠️<span style={s.tabBadge}>{alerts.length}</span>
           </button>
         )}
       </div>
 
-      {/* メインコンテンツ */}
       <main style={s.main}>
         {loading ? (
           <div style={s.center}><div style={s.spinner} /></div>
         ) : (
           <>
-            {/* 在庫一覧タブ */}
             {tab === 'stock' && (
               <div>
                 {products.length === 0 ? (
@@ -237,44 +268,47 @@ export default function App() {
                     <p style={s.emptyTitle}>薬剤が登録されていません</p>
                     <p style={s.emptySub}>下のボタンから薬剤を登録してください</p>
                   </div>
-                ) : (
-                  products.map(p => {
-                    const isAlert = p.stock < p.threshold
-                    const ratio = p.threshold > 0 ? Math.min(p.stock / p.threshold, 1) : 1
-                    return (
-                      <div key={p.id} style={{ ...s.card, ...(isAlert ? s.cardAlert : {}) }}>
-                        <div style={s.cardTop}>
-                          <div style={s.cardLeft}>
-                            <span style={s.cardName}>{p.name}</span>
-                            {p.barcode && <span style={s.cardBarcode}>〒 {p.barcode}</span>}
+                ) : products.map(p => {
+                  const isAlert = p.stock < p.threshold
+                  const ratio = p.threshold > 0 ? Math.min(p.stock / p.threshold, 1) : 1
+                  return (
+                    <div key={p.id} style={{ ...s.card, ...(isAlert ? s.cardAlert : {}) }}>
+                      <div style={s.cardInner}>
+                        <div style={s.cardPhoto}>
+                          {p.image_url ? <img src={p.image_url} style={s.cardPhotoImg} alt="" /> : <span style={s.cardPhotoIcon}>💊</span>}
+                        </div>
+                        <div style={s.cardContent}>
+                          <div style={s.cardTop}>
+                            <div style={s.cardLeft}>
+                              <span style={s.cardName}>{p.name}</span>
+                              {p.barcode && <span style={s.cardBarcode}>〒 {p.barcode}</span>}
+                            </div>
+                            <div style={s.cardRight}>
+                              <span style={{ ...s.badge, ...(isAlert ? s.badgeDanger : s.badgeOk) }}>{isAlert ? '要発注' : 'OK'}</span>
+                              <button style={s.moreBtn} onClick={() => setModal({ type: 'edit', product: p })}>···</button>
+                            </div>
                           </div>
-                          <div style={s.cardRight}>
-                            <span style={{ ...s.badge, ...(isAlert ? s.badgeDanger : s.badgeOk) }}>
-                              {isAlert ? '要発注' : 'OK'}
-                            </span>
-                            <button style={s.moreBtn} onClick={() => setModal({ type: 'edit', product: p })}>···</button>
+                          <div style={s.stockRow}>
+                            <span style={{ ...s.stockNum, color: isAlert ? '#ef3c71' : '#1e1e21' }}>{p.stock}</span>
+                            <span style={s.stockUnit}>本</span>
+                            <span style={s.thresholdLabel}>発注ライン: {p.threshold}本</span>
                           </div>
-                        </div>
-                        <div style={s.stockRow}>
-                          <span style={{ ...s.stockNum, color: isAlert ? '#ef3c71' : '#1e1e21' }}>{p.stock}</span>
-                          <span style={s.stockUnit}>本</span>
-                          <span style={s.thresholdLabel}>/ 閾値 {p.threshold}本</span>
-                        </div>
-                        <div style={s.barBg}>
-                          <div style={{ ...s.barFill, width: `${ratio * 100}%`, background: isAlert ? 'linear-gradient(90deg,#ef3c71,#ff727d)' : 'linear-gradient(90deg,#10b981,#34d399)' }} />
-                        </div>
-                        <div style={s.cardActions}>
-                          <button style={s.useBtn} onClick={() => setModal({ type: 'use', product: p })}>使用する</button>
-                          <button style={s.restockBtn} onClick={() => setModal({ type: 'restock', product: p })}>入荷する</button>
+                          <div style={s.barBg}>
+                            <div style={{ ...s.barFill, width: `${ratio * 100}%`, background: isAlert ? 'linear-gradient(90deg,#ef3c71,#ff727d)' : 'linear-gradient(90deg,#10b981,#34d399)' }} />
+                          </div>
+                          <div style={s.cardActions}>
+                            <button style={s.useBtn} onClick={() => setModal({ type: 'use', product: p })}>使用</button>
+                            <button style={s.restockBtn} onClick={() => setModal({ type: 'restock', product: p })}>入荷</button>
+                            <button style={s.orderBtn} onClick={() => setModal({ type: 'orderCreate', product: p })}>発注</button>
+                          </div>
                         </div>
                       </div>
-                    )
-                  })
-                )}
+                    </div>
+                  )
+                })}
               </div>
             )}
 
-            {/* レシピタブ */}
             {tab === 'recipe' && (
               <div>
                 {recipes.length === 0 ? (
@@ -283,38 +317,78 @@ export default function App() {
                     <p style={s.emptyTitle}>レシピが登録されていません</p>
                     <p style={s.emptySub}>下のボタンから登録してください</p>
                   </div>
-                ) : (
-                  recipes.map(recipe => (
-                    <div key={recipe.id} style={s.recipeCard}>
-                      <div style={s.recipeTop}>
-                        <div>
-                          <p style={s.recipeName}>{recipe.name}</p>
-                          {recipe.memo && <p style={s.recipeMemo}>{recipe.memo}</p>}
-                        </div>
-                        <button style={s.recipeEditBtn} onClick={() => setModal({ type: 'recipeEdit', recipe })}>編集</button>
+                ) : recipes.map(recipe => (
+                  <div key={recipe.id} style={s.recipeCard}>
+                    <div style={s.recipeTop}>
+                      <div>
+                        <p style={s.recipeName}>{recipe.name}</p>
+                        {recipe.memo && <p style={s.recipeMemo}>{recipe.memo}</p>}
                       </div>
-                      {recipe.recipe_items && recipe.recipe_items.length > 0 && (
-                        <div style={s.recipeIngredients}>
-                          {recipe.recipe_items.map(item => (
-                            <span key={item.id} style={s.ingredientChip}>
-                              {item.products?.name} {item.quantity}{item.unit}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                      <button style={s.applyBtn} onClick={() => {
-                        if (!confirm(`「${recipe.name}」を施術に使いますか？`)) return
-                        handleRecipeApply(recipe)
-                      }}>
-                        ✓ 施術に使う
-                      </button>
+                      <button style={s.recipeEditBtn} onClick={() => setModal({ type: 'recipeEdit', recipe })}>編集</button>
                     </div>
-                  ))
+                    {recipe.recipe_items && recipe.recipe_items.length > 0 && (
+                      <div style={s.recipeIngredients}>
+                        {recipe.recipe_items.map(item => (
+                          <span key={item.id} style={s.ingredientChip}>{item.products?.name} {item.quantity}{item.unit}</span>
+                        ))}
+                      </div>
+                    )}
+                    <button style={s.applyBtn} onClick={() => { if (!confirm(`「${recipe.name}」を施術に使いますか？`)) return; handleRecipeApply(recipe) }}>
+                      ✓ 施術に使う
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {tab === 'order' && (
+              <div>
+                {orders.length === 0 ? (
+                  <div style={s.empty}>
+                    <p style={s.emptyIcon}>📋</p>
+                    <p style={s.emptyTitle}>発注履歴がありません</p>
+                    <p style={s.emptySub}>在庫一覧の「発注」ボタンから発注できます</p>
+                  </div>
+                ) : (
+                  <>
+                    {activeOrders.length > 0 && (
+                      <>
+                        <p style={s.orderSection}>発注中 ({activeOrders.length}件)</p>
+                        {activeOrders.map(order => (
+                          <div key={order.id} style={{ ...s.orderCard, ...s.orderCardActive }}>
+                            <div style={s.orderTop}>
+                              <div>
+                                <p style={s.orderProductName}>{order.products?.name ?? '—'}</p>
+                                <p style={s.orderMeta}>{formatDate(order.ordered_at)} 発注 · {order.quantity}本</p>
+                              </div>
+                              <span style={{ ...s.orderBadge, ...s.orderBadgeActive }}>発注中</span>
+                            </div>
+                            <button style={s.receiveBtn} onClick={() => handleReceiveOrder(order)}>✓ 受け取った</button>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                    {receivedOrders.length > 0 && (
+                      <>
+                        <p style={{ ...s.orderSection, marginTop: 16 }}>受け取り済み</p>
+                        {receivedOrders.map(order => (
+                          <div key={order.id} style={s.orderCard}>
+                            <div style={s.orderTop}>
+                              <div>
+                                <p style={s.orderProductName}>{order.products?.name ?? '—'}</p>
+                                <p style={s.orderMeta}>{formatDate(order.ordered_at)} 発注 · {order.quantity}本{order.received_at && ` · ${formatDate(order.received_at)} 受取`}</p>
+                              </div>
+                              <span style={{ ...s.orderBadge, ...s.orderBadgeDone }}>受取済</span>
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </>
                 )}
               </div>
             )}
 
-            {/* 要発注タブ */}
             {tab === 'alert' && (
               <div>
                 {alerts.length === 0 ? (
@@ -322,72 +396,64 @@ export default function App() {
                     <p style={s.emptyIcon}>✅</p>
                     <p style={s.emptyTitle}>要発注はありません</p>
                   </div>
-                ) : (
-                  alerts.map(p => (
-                    <div key={p.id} style={{ ...s.card, ...s.cardAlert }}>
-                      <div style={s.cardTop}>
-                        <span style={s.cardName}>{p.name}</span>
-                        <span style={{ ...s.badge, ...s.badgeDanger }}>要発注</span>
+                ) : alerts.map(p => (
+                  <div key={p.id} style={{ ...s.card, ...s.cardAlert }}>
+                    <div style={s.cardInner}>
+                      <div style={s.cardPhoto}>
+                        {p.image_url ? <img src={p.image_url} style={s.cardPhotoImg} alt="" /> : <span style={s.cardPhotoIcon}>💊</span>}
                       </div>
-                      <div style={s.stockRow}>
-                        <span style={{ ...s.stockNum, color: '#ef3c71' }}>{p.stock}</span>
-                        <span style={s.stockUnit}>本</span>
-                        <span style={s.thresholdLabel}>/ 閾値 {p.threshold}本</span>
+                      <div style={s.cardContent}>
+                        <div style={s.cardTop}>
+                          <span style={s.cardName}>{p.name}</span>
+                          <span style={{ ...s.badge, ...s.badgeDanger }}>要発注</span>
+                        </div>
+                        <div style={s.stockRow}>
+                          <span style={{ ...s.stockNum, color: '#ef3c71' }}>{p.stock}</span>
+                          <span style={s.stockUnit}>本</span>
+                          <span style={s.thresholdLabel}>発注ライン: {p.threshold}本</span>
+                        </div>
+                        <div style={s.cardActions}>
+                          <button style={s.restockBtn} onClick={() => setModal({ type: 'restock', product: p })}>入荷</button>
+                          <button style={s.orderBtn} onClick={() => setModal({ type: 'orderCreate', product: p })}>発注</button>
+                        </div>
                       </div>
-                      <button style={s.restockBtn} onClick={() => setModal({ type: 'restock', product: p })}>入荷する</button>
                     </div>
-                  ))
-                )}
+                  </div>
+                ))}
               </div>
             )}
           </>
         )}
       </main>
 
-      {/* ボトムアクション */}
       <div style={s.bottomBar}>
-        <div style={s.voiceRow}>
-          <VoiceInputButton products={products} onResult={handleVoiceResult} />
-        </div>
+        <div style={s.voiceRow}><VoiceInputButton products={products} onResult={handleVoiceResult} /></div>
         <div style={s.actionRow}>
           <button style={s.addBtn} onClick={() => setModal({ type: 'add' })}>＋ 薬剤を追加</button>
-          {tab === 'recipe' && (
-            <button style={s.addBtnSub} onClick={() => setModal({ type: 'recipeAdd' })}>＋ レシピ追加</button>
-          )}
+          {tab === 'recipe' && <button style={s.addBtnSub} onClick={() => setModal({ type: 'recipeAdd' })}>＋ レシピ追加</button>}
         </div>
       </div>
 
-      {/* トースト */}
       {toast && <div style={s.toast}>{toast}</div>}
 
-      {/* Modals */}
       {(modal?.type === 'add' || modal?.type === 'edit') && (
         <ProductModal product={modal.type === 'edit' ? modal.product : null} products={products} onClose={() => setModal(null)} onSave={handleAddOrEdit} />
       )}
-      {modal?.type === 'use' && (
-        <UsageModal product={modal.product} onClose={() => setModal(null)} onSave={handleUse} />
+      {modal?.type === 'edit' && (
+        <div style={s.deleteFloat}>
+          <button style={s.deleteFloatBtn} onClick={() => handleDelete(modal.product)}>🗑 削除</button>
+        </div>
       )}
-      {modal?.type === 'restock' && (
-        <RestockModal product={modal.product} onClose={() => setModal(null)} onSave={handleRestock} />
-      )}
-      {modal?.type === 'history' && (
-        <HistoryModal logs={logs} onClose={() => setModal(null)} />
-      )}
-      {modal?.type === 'stockCount' && (
-        <StockCountModal products={products} onApply={handleStockCountApply} onClose={() => setModal(null)} />
-      )}
-      {modal?.type === 'recipeList' && (
-        <RecipeListModal recipes={recipes} onClose={() => setModal(null)} onAdd={() => setModal({ type: 'recipeAdd' })} onEdit={(recipe) => setModal({ type: 'recipeEdit', recipe })} onApply={handleRecipeApply} onDelete={handleRecipeDelete} />
-      )}
+      {modal?.type === 'use' && <UsageModal product={modal.product} onClose={() => setModal(null)} onSave={handleUse} />}
+      {modal?.type === 'restock' && <RestockModal product={modal.product} onClose={() => setModal(null)} onSave={handleRestock} />}
+      {modal?.type === 'history' && <HistoryModal logs={logs} onClose={() => setModal(null)} />}
+      {modal?.type === 'stockCount' && <StockCountModal products={products} onApply={handleStockCountApply} onClose={() => setModal(null)} />}
+      {modal?.type === 'recipeList' && <RecipeListModal recipes={recipes} onClose={() => setModal(null)} onAdd={() => setModal({ type: 'recipeAdd' })} onEdit={(recipe) => setModal({ type: 'recipeEdit', recipe })} onApply={handleRecipeApply} onDelete={handleRecipeDelete} />}
       {(modal?.type === 'recipeAdd' || modal?.type === 'recipeEdit') && (
         <RecipeModal recipe={modal.type === 'recipeEdit' ? modal.recipe : null} products={products} onClose={() => setModal(null)} onSave={handleRecipeSave} />
       )}
-
-      {/* 削除は編集モーダル経由 */}
-      {modal?.type === 'edit' && (
-        <div style={{ position: 'fixed', bottom: 100, left: '50%', transform: 'translateX(-50%)', zIndex: 200 }}>
-          <button style={s.deleteFloatBtn} onClick={() => handleDelete(modal.product)}>🗑 削除</button>
-        </div>
+      {modal?.type === 'orderCreate' && (
+        <OrderCreateModal product={modal.product} onClose={() => setModal(null)} onSave={handleCreateOrder} />
       )}
     </div>
   )
@@ -395,8 +461,6 @@ export default function App() {
 
 const s: Record<string, React.CSSProperties> = {
   page: { display: 'flex', flexDirection: 'column', height: '100dvh', background: '#f7f7f9', overflow: 'hidden', fontFamily: "'Hiragino Kaku Gothic ProN', 'Hiragino Sans', sans-serif" },
-
-  // ヘッダー（ピンク系グラデーション）
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'linear-gradient(90deg, #ef3c71, #ff727d)', padding: '12px 16px', flexShrink: 0 },
   headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
   logo: { width: 40, height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 },
@@ -404,46 +468,41 @@ const s: Record<string, React.CSSProperties> = {
   headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 1 },
   headerRight: { display: 'flex', gap: 6 },
   iconBtn: { width: 40, height: 40, borderRadius: 10, fontSize: 17, background: 'rgba(255,255,255,0.2)', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center' },
-
-  // アラートバナー
   alertBanner: { display: 'flex', alignItems: 'center', gap: 8, background: '#fff3f6', padding: '10px 16px', borderBottom: '1px solid rgba(239,60,113,0.15)', cursor: 'pointer', flexShrink: 0 },
-  alertBannerIcon: { fontSize: 16 },
   alertBannerText: { flex: 1, fontSize: 13, fontWeight: 700, color: '#ef3c71' },
   alertBannerArrow: { fontSize: 18, color: '#ef3c71' },
-
-  // タブ
   tabBar: { display: 'flex', background: '#fff', borderBottom: '1px solid #ebebeb', flexShrink: 0 },
-  tab: { flex: 1, padding: '12px 4px', fontSize: 13, fontWeight: 600, color: '#888', background: 'none', borderBottom: '2px solid transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 4 },
+  tab: { flex: 1, padding: '12px 4px', fontSize: 12, fontWeight: 600, color: '#888', background: 'none', borderBottom: '2px solid transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 3 },
   tabActive: { color: '#ef3c71', borderBottom: '2px solid #ef3c71' },
-  tabAlert: { color: '#ef3c71' },
-  tabBadge: { background: '#ef3c71', color: '#fff', fontSize: 10, fontWeight: 800, borderRadius: 99, padding: '1px 6px', marginLeft: 2 },
-
-  // メイン
+  tabAlert: { color: '#ef3c71', flex: 'none', padding: '12px 12px' },
+  tabBadge: { background: '#ef3c71', color: '#fff', fontSize: 10, fontWeight: 800, borderRadius: 99, padding: '1px 5px' },
   main: { flex: 1, overflowY: 'auto', padding: '12px' },
-
-  // 薬剤カード
-  card: { background: '#fff', borderRadius: 14, padding: '14px 16px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1.5px solid #ebebeb' },
-  cardAlert: { border: '1.5px solid rgba(239,60,113,0.25)', background: '#fff' },
-  cardTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
-  cardLeft: { display: 'flex', flexDirection: 'column', gap: 2 },
-  cardRight: { display: 'flex', alignItems: 'center', gap: 6 },
-  cardName: { fontSize: 15, fontWeight: 700, color: '#1e1e21' },
-  cardBarcode: { fontSize: 11, color: '#aaa' },
-  badge: { fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 },
+  card: { background: '#fff', borderRadius: 14, padding: '12px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1.5px solid #ebebeb' },
+  cardAlert: { border: '1.5px solid rgba(239,60,113,0.25)' },
+  cardInner: { display: 'flex', gap: 12, alignItems: 'flex-start' },
+  cardPhoto: { width: 60, height: 60, borderRadius: 10, background: '#f5f5f7', border: '1px solid #ebebeb', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, overflow: 'hidden' },
+  cardPhotoImg: { width: '100%', height: '100%', objectFit: 'cover' },
+  cardPhotoIcon: { fontSize: 26 },
+  cardContent: { flex: 1, minWidth: 0 },
+  cardTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 },
+  cardLeft: { display: 'flex', flexDirection: 'column', gap: 2, flex: 1, minWidth: 0 },
+  cardRight: { display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 },
+  cardName: { fontSize: 14, fontWeight: 700, color: '#1e1e21', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+  cardBarcode: { fontSize: 10, color: '#bbb' },
+  badge: { fontSize: 10, fontWeight: 700, padding: '2px 8px', borderRadius: 99 },
   badgeOk: { background: 'rgba(16,185,129,0.1)', color: '#059669' },
   badgeDanger: { background: 'rgba(239,60,113,0.1)', color: '#ef3c71' },
-  moreBtn: { fontSize: 18, color: '#bbb', padding: '0 4px', background: 'none' },
-  stockRow: { display: 'flex', alignItems: 'baseline', gap: 4, marginBottom: 8 },
-  stockNum: { fontSize: 38, fontWeight: 900, lineHeight: 1, letterSpacing: '-1px' },
-  stockUnit: { fontSize: 14, fontWeight: 600, color: '#aaa' },
-  thresholdLabel: { fontSize: 12, color: '#bbb', marginLeft: 4 },
-  barBg: { height: 5, background: '#f0f0f5', borderRadius: 99, overflow: 'hidden', marginBottom: 12 },
+  moreBtn: { fontSize: 18, color: '#bbb', padding: '0 2px', background: 'none' },
+  stockRow: { display: 'flex', alignItems: 'baseline', gap: 3, marginBottom: 6 },
+  stockNum: { fontSize: 28, fontWeight: 900, lineHeight: 1, letterSpacing: '-0.5px' },
+  stockUnit: { fontSize: 12, fontWeight: 600, color: '#aaa' },
+  thresholdLabel: { fontSize: 11, color: '#bbb', marginLeft: 6 },
+  barBg: { height: 4, background: '#f0f0f5', borderRadius: 99, overflow: 'hidden', marginBottom: 8 },
   barFill: { height: '100%', borderRadius: 99, transition: 'width 0.5s ease' },
-  cardActions: { display: 'flex', gap: 8 },
-  useBtn: { flex: 1, padding: '10px', borderRadius: 10, fontSize: 13, fontWeight: 700, background: 'rgba(239,60,113,0.08)', color: '#ef3c71' },
-  restockBtn: { flex: 1, padding: '10px', borderRadius: 10, fontSize: 13, fontWeight: 700, background: 'rgba(16,185,129,0.08)', color: '#059669' },
-
-  // レシピカード
+  cardActions: { display: 'flex', gap: 6 },
+  useBtn: { flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 12, fontWeight: 700, background: 'rgba(239,60,113,0.08)', color: '#ef3c71' },
+  restockBtn: { flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 12, fontWeight: 700, background: 'rgba(16,185,129,0.08)', color: '#059669' },
+  orderBtn: { flex: 1, padding: '8px 0', borderRadius: 8, fontSize: 12, fontWeight: 700, background: 'rgba(99,102,241,0.08)', color: '#6366f1' },
   recipeCard: { background: '#fff', borderRadius: 14, padding: '14px 16px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1.5px solid #ebebeb' },
   recipeTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
   recipeName: { fontSize: 15, fontWeight: 700, color: '#1e1e21' },
@@ -452,27 +511,28 @@ const s: Record<string, React.CSSProperties> = {
   recipeIngredients: { display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12 },
   ingredientChip: { fontSize: 12, fontWeight: 600, background: 'rgba(239,60,113,0.08)', color: '#ef3c71', padding: '3px 10px', borderRadius: 99 },
   applyBtn: { width: '100%', padding: '11px', borderRadius: 10, fontSize: 13, fontWeight: 700, background: 'linear-gradient(90deg,#ef3c71,#ff727d)', color: '#fff' },
-
-  // ボトム
+  orderSection: { fontSize: 12, fontWeight: 700, color: '#888', marginBottom: 8, letterSpacing: '0.03em' },
+  orderCard: { background: '#fff', borderRadius: 14, padding: '14px 16px', marginBottom: 10, boxShadow: '0 1px 4px rgba(0,0,0,0.06)', border: '1.5px solid #ebebeb' },
+  orderCardActive: { border: '1.5px solid rgba(239,60,113,0.2)', background: '#fffbfc' },
+  orderTop: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
+  orderProductName: { fontSize: 15, fontWeight: 700, color: '#1e1e21', marginBottom: 4 },
+  orderMeta: { fontSize: 12, color: '#aaa' },
+  orderBadge: { fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 },
+  orderBadgeActive: { background: 'rgba(239,60,113,0.1)', color: '#ef3c71' },
+  orderBadgeDone: { background: 'rgba(16,185,129,0.1)', color: '#059669' },
+  receiveBtn: { width: '100%', padding: '11px', borderRadius: 10, fontSize: 13, fontWeight: 700, background: 'linear-gradient(90deg,#ef3c71,#ff727d)', color: '#fff' },
   bottomBar: { background: '#fff', borderTop: '1px solid #ebebeb', padding: '10px 16px 20px', flexShrink: 0 },
   voiceRow: { marginBottom: 8 },
   actionRow: { display: 'flex', gap: 8 },
   addBtn: { flex: 1, padding: '13px', borderRadius: 12, fontSize: 15, fontWeight: 700, background: 'linear-gradient(90deg,#ef3c71,#ff727d)', color: '#fff', boxShadow: '0 3px 12px rgba(239,60,113,0.3)' },
   addBtnSub: { flex: 1, padding: '13px', borderRadius: 12, fontSize: 15, fontWeight: 700, background: '#f5f5f7', color: '#1e1e21' },
-
-  // 空状態
   empty: { textAlign: 'center', padding: '60px 20px' },
   emptyIcon: { fontSize: 48, marginBottom: 12 },
   emptyTitle: { fontSize: 16, fontWeight: 700, color: '#1e1e21', marginBottom: 6 },
   emptySub: { fontSize: 13, color: '#aaa' },
-
-  // トースト
   toast: { position: 'fixed', bottom: 120, left: '50%', transform: 'translateX(-50%)', background: 'rgba(30,30,33,0.9)', color: '#fff', fontSize: 13, fontWeight: 600, padding: '10px 20px', borderRadius: 99, whiteSpace: 'nowrap', zIndex: 999, backdropFilter: 'blur(8px)' },
-
-  // 削除ボタン
-  deleteFloatBtn: { background: '#fee2e2', color: '#ef3c71', fontWeight: 700, fontSize: 13, padding: '10px 20px', borderRadius: 99, boxShadow: '0 2px 8px rgba(0,0,0,0.1)' },
-
-  // ユーティリティ
+  deleteFloat: { position: 'fixed', bottom: 160, left: 0, right: 0, display: 'flex', justifyContent: 'center', zIndex: 200, pointerEvents: 'none' },
+  deleteFloatBtn: { background: '#fee2e2', color: '#ef3c71', fontWeight: 700, fontSize: 13, padding: '10px 20px', borderRadius: 99, boxShadow: '0 2px 8px rgba(0,0,0,0.1)', pointerEvents: 'all' },
   center: { display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' },
   spinner: { width: 32, height: 32, border: '3px solid #eee', borderTop: '3px solid #ef3c71', borderRadius: '50%', animation: 'spin 0.8s linear infinite' },
 }

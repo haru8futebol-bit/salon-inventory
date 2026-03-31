@@ -150,3 +150,62 @@ alter table products add column if not exists barcode text;
 - html5-qrcode はカメラ権限を要求する。iOSはSafariのみカメラアクセス可能
 - RLSを無効化したままのプロトタイプ構成 → 外部公開前にRLS + Supabase Authを設定すること
 - インラインスタイルの三項演算子でプロパティごとに完結させること（`background: x ? a : b` の形式。複数プロパティをまとめると TS エラー）
+# salon-inventory
+
+## プロジェクト概要
+美容室の薬剤在庫管理アプリ。お母さんの美容室（ONE）をPoCとして開発中。
+
+## 技術構成
+- React + TypeScript + Vite
+- Supabase（データベース・Project ID: yahnethjabtrmwkahhre）
+- Vercel（本番公開）
+- GitHub（コード管理）
+
+## 本番URL
+https://salon-inventory-q3t3.vercel.app
+
+## ローカル起動方法
+ターミナルで以下を実行：
+cd "/Users/harusakuriki/Library/Mobile Documents/com~apple~CloudDocs/TMJ サッカー事業/salon-inventory"
+npm run dev
+→ http://localhost:5173 で確認
+
+## 機能追加・デザイン変更からデプロイまでの流れ
+
+### Step 1：Cursorで編集
+Claude Codeに日本語で指示する。
+例：「〇〇の機能を追加して」「このデザインを変えて」
+
+### Step 2：ローカルで確認
+ターミナルで npm run dev を実行して
+http://localhost:5173 で動作確認する。
+
+### Step 3：GitHubにプッシュ
+以下の3行をターミナルで1行ずつ実行する。
+git add .
+git commit -m "変更内容のメモ"
+git push origin main
+
+### Step 4：Vercelに自動反映
+git pushするとVercelが自動で検知して
+数分以内に本番URLに反映される。
+https://salon-inventory-q3t3.vercel.app
+
+## 現在の実装状況
+- 薬剤登録・編集・削除
+- 使用量記録
+- 入荷記録
+- 履歴一覧
+- 在庫アラート表示
+- レシピ管理（DBテーブルのみ）
+
+## 次にやること
+- 音声入力機能（Web Speech API・無料）
+- バーコードスキャン機能（ZXing・無料）
+- LINE通知連携
+- Vercelデプロイ済み
+
+## 注意事項
+- .envファイルはGitHubにアップしない（.gitignoreに設定済み）
+- Supabaseの環境変数はVercelのEnvironment Variablesに設定済み
+- コードのプッシュはMacのターミナル.appから行う

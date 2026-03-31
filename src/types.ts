@@ -4,7 +4,18 @@ export interface Product {
   stock: number
   threshold: number
   barcode: string | null
+  image_url: string | null
   created_at: string
+}
+
+export interface Order {
+  id: string
+  product_id: string
+  quantity: number
+  status: '発注中' | '受け取り済み'
+  ordered_at: string
+  received_at: string | null
+  products?: { name: string }
 }
 
 export interface UsageLog {
