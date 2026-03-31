@@ -12,6 +12,7 @@ import RecipeModal from './components/RecipeModal'
 import RecipeListModal from './components/RecipeListModal'
 import OrderCreateModal from './components/OrderCreateModal'
 import AuthScreen from './components/AuthScreen'
+import ProfileModal from './components/ProfileModal'
 
 type Modal =
   | { type: 'add' }
@@ -24,6 +25,7 @@ type Modal =
   | { type: 'recipeAdd' }
   | { type: 'recipeEdit'; recipe: Recipe }
   | { type: 'orderCreate'; product: Product }
+  | { type: 'profile' }
 
 type Tab = 'stock' | 'recipe' | 'order' | 'alert'
 
@@ -41,7 +43,8 @@ async function sendLineNotification(message: string) {
 }
 
 export default function App() {
-  const [user, setUser] = useState<User | null | undefined>(undefined) // undefined=初期化中
+  const [user, setUser] = useState<User | null | undefined>(undefined)
+  const [profile, setProfile] = useState<{ salon_name: string; avatar_url: string } | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -51,7 +54,7 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('stock')
   const [toast, setToast] = useState('')
 
-  // セッション監視
+  // セッション監視（自動ログイン：localStorageにセッションが残っていれば自動復元）
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setUser(data.session?.user ?? null))
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
@@ -59,6 +62,14 @@ export default function App() {
     })
     return () => subscription.unsubscribe()
   }, [])
+
+  // プロフィール読み込み
+  useEffect(() => {
+    if (!user) return
+    supabase.from('profiles').select('salon_name, avatar_url').eq('id', user.id).single().then(({ data }) => {
+      if (data) setProfile({ salon_name: data.salon_name ?? 'マイサロン', avatar_url: data.avatar_url ?? '' })
+    })
+  }, [user])
 
   const showToast = (msg: string) => {
     setToast(msg)
@@ -248,13 +259,18 @@ export default function App() {
   return (
     <div style={s.page}>
       <header style={s.header}>
-        <div style={s.headerLeft}>
-          <div style={s.logo}>✂️</div>
-          <div>
-            <p style={s.headerName}>在庫管理アシスタント</p>
-            <p style={s.headerSub}>薬剤在庫管理</p>
+        <button style={s.headerLeft} onClick={() => setModal({ type: 'profile' })}>
+          <div style={s.avatarBtn}>
+            {profile?.avatar_url
+              ? <img src={profile.avatar_url} style={s.avatarImg} alt="" />
+              : <span style={s.avatarIcon}>✂️</span>
+            }
           </div>
-        </div>
+          <div>
+            <p style={s.headerName}>{profile?.salon_name ?? '在庫管理アシスタント'}</p>
+            <p style={s.headerSub}>タップでプロフィール編集</p>
+          </div>
+        </button>
         <div style={s.headerRight}>
           <button style={s.iconBtn} onClick={() => setModal({ type: 'history' })}>📋</button>
           <button style={s.iconBtn} onClick={() => setModal({ type: 'stockCount' })}>📷</button>
@@ -478,6 +494,9 @@ export default function App() {
       {modal?.type === 'orderCreate' && (
         <OrderCreateModal product={modal.product} onClose={() => setModal(null)} onSave={handleCreateOrder} />
       )}
+      {modal?.type === 'profile' && user && (
+        <ProfileModal user={user} onClose={() => setModal(null)} onSaved={(p) => setProfile(p)} />
+      )}
     </div>
   )
 }
@@ -485,7 +504,10 @@ export default function App() {
 const s: Record<string, React.CSSProperties> = {
   page: { display: 'flex', flexDirection: 'column', height: '100dvh', background: '#f7f7f9', overflow: 'hidden', fontFamily: "'Hiragino Kaku Gothic ProN', 'Hiragino Sans', sans-serif" },
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'linear-gradient(90deg, #ef3c71, #ff727d)', padding: '12px 16px', flexShrink: 0 },
-  headerLeft: { display: 'flex', alignItems: 'center', gap: 10 },
+  headerLeft: { display: 'flex', alignItems: 'center', gap: 10, background: 'none', cursor: 'pointer' },
+  avatarBtn: { width: 40, height: 40, borderRadius: '50%', background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', flexShrink: 0 },
+  avatarImg: { width: '100%', height: '100%', objectFit: 'cover' as const },
+  avatarIcon: { fontSize: 20, color: '#fff' },
   logo: { width: 40, height: 40, borderRadius: 12, background: 'rgba(255,255,255,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 20 },
   headerName: { fontSize: 15, fontWeight: 700, color: '#fff' },
   headerSub: { fontSize: 11, color: 'rgba(255,255,255,0.7)', marginTop: 1 },
