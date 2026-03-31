@@ -20,6 +20,11 @@ export default function ProfileModal({ user, onClose, onSaved }: Props) {
   const [loading, setLoading] = useState(false)
   const [photoLoading, setPhotoLoading] = useState(false)
   const [toast, setToast] = useState('')
+  const [showPasswordSection, setShowPasswordSection] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [passwordLoading, setPasswordLoading] = useState(false)
+  const [passwordToast, setPasswordToast] = useState('')
 
   useEffect(() => {
     supabase.from('profiles').select('*').eq('id', user.id).single().then(({ data }) => {
@@ -38,29 +43,50 @@ export default function ProfileModal({ user, onClose, onSaved }: Props) {
     reader.readAsDataURL(file)
 
     const ext = file.name.split('.').pop() ?? 'jpg'
-    const path = `avatars/${user.id}.${ext}`
+    // タイムスタンプを付けてキャッシュを回避
+    const path = `avatars/${user.id}_${Date.now()}.${ext}`
     const { error } = await supabase.storage.from('product-images').upload(path, file, { upsert: true })
     if (!error) {
       const { data } = supabase.storage.from('product-images').getPublicUrl(path)
       setAvatarUrl(data.publicUrl)
+    } else {
+      setToast('写真のアップロードに失敗しました')
     }
     setPhotoLoading(false)
   }
 
   const handleSave = async () => {
     setLoading(true)
-    await supabase.from('profiles').upsert({
+    const { error } = await supabase.from('profiles').upsert({
       id: user.id,
       salon_name: salonName,
       avatar_url: avatarUrl || null,
       updated_at: new Date().toISOString(),
     })
     setLoading(false)
+    if (error) {
+      setToast('保存に失敗しました')
+      return
+    }
     setToast('保存しました')
     setTimeout(() => {
       onSaved({ salon_name: salonName, avatar_url: avatarUrl })
       onClose()
     }, 800)
+  }
+
+  const handlePasswordChange = async () => {
+    setPasswordToast('')
+    if (newPassword.length < 6) { setPasswordToast('パスワードは6文字以上で設定してください'); return }
+    if (newPassword !== confirmPassword) { setPasswordToast('パスワードが一致しません'); return }
+    setPasswordLoading(true)
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    setPasswordLoading(false)
+    if (error) { setPasswordToast('変更に失敗しました'); return }
+    setNewPassword('')
+    setConfirmPassword('')
+    setShowPasswordSection(false)
+    setToast('パスワードを変更しました')
   }
 
   return (
@@ -98,10 +124,29 @@ export default function ProfileModal({ user, onClose, onSaved }: Props) {
           <p style={s.emailDisplay}>{user.email}</p>
         </div>
 
+        {/* パスワード変更 */}
+        <div style={s.field}>
+          <button style={s.passwordToggleBtn} onClick={() => setShowPasswordSection(v => !v)}>
+            🔑 パスワードを変更する {showPasswordSection ? '▲' : '▼'}
+          </button>
+          {showPasswordSection && (
+            <div style={s.passwordSection}>
+              <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                placeholder="新しいパスワード（6文字以上）" style={{ ...s.input, marginBottom: 10 }} />
+              <input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                placeholder="パスワードを確認" style={s.input} />
+              {passwordToast && <p style={s.errorMsg}>{passwordToast}</p>}
+              <button style={{ ...s.saveBtn, marginTop: 12, marginBottom: 0 }} onClick={handlePasswordChange} disabled={passwordLoading}>
+                {passwordLoading ? '変更中...' : 'パスワードを変更する'}
+              </button>
+            </div>
+          )}
+        </div>
+
         {toast && <p style={s.toastMsg}>{toast}</p>}
 
-        <button style={s.saveBtn} onClick={handleSave} disabled={loading}>
-          {loading ? '保存中...' : '変更を保存'}
+        <button style={{ ...s.saveBtn, opacity: loading || photoLoading ? 0.6 : 1 }} onClick={handleSave} disabled={loading || photoLoading}>
+          {loading ? '保存中...' : photoLoading ? 'アップロード中...' : '変更を保存'}
         </button>
         <button style={s.cancelBtn} onClick={onClose}>閉じる</button>
       </div>
@@ -149,4 +194,13 @@ const s: Record<string, React.CSSProperties> = {
     width: '100%', padding: '13px', borderRadius: 12, fontSize: 15, fontWeight: 600,
     background: '#f1f0f7', color: '#888',
   },
+  passwordToggleBtn: {
+    width: '100%', padding: '12px 14px', borderRadius: 10, fontSize: 14, fontWeight: 600,
+    background: '#f5f5f7', color: '#555', textAlign: 'left' as const,
+  },
+  passwordSection: {
+    marginTop: 12, padding: '16px', background: '#fafafa',
+    borderRadius: 10, border: '1.5px solid #e8e8ed',
+  },
+  errorMsg: { fontSize: 13, color: '#ef3c71', fontWeight: 600, marginTop: 8 },
 }
