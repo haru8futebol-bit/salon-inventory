@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { supabase } from './supabase'
 import { Product, UsageLog, Recipe, Order } from './types'
+import type { User } from '@supabase/supabase-js'
 import ProductModal from './components/ProductModal'
 import UsageModal from './components/UsageModal'
 import RestockModal from './components/RestockModal'
@@ -10,6 +11,7 @@ import StockCountModal from './components/StockCountModal'
 import RecipeModal from './components/RecipeModal'
 import RecipeListModal from './components/RecipeListModal'
 import OrderCreateModal from './components/OrderCreateModal'
+import AuthScreen from './components/AuthScreen'
 
 type Modal =
   | { type: 'add' }
@@ -39,6 +41,7 @@ async function sendLineNotification(message: string) {
 }
 
 export default function App() {
+  const [user, setUser] = useState<User | null | undefined>(undefined) // undefined=初期化中
   const [products, setProducts] = useState<Product[]>([])
   const [logs, setLogs] = useState<UsageLog[]>([])
   const [recipes, setRecipes] = useState<Recipe[]>([])
@@ -48,9 +51,23 @@ export default function App() {
   const [tab, setTab] = useState<Tab>('stock')
   const [toast, setToast] = useState('')
 
+  // セッション監視
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setUser(data.session?.user ?? null))
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
   const showToast = (msg: string) => {
     setToast(msg)
     setTimeout(() => setToast(''), 2500)
+  }
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut()
+    showToast('ログアウトしました')
   }
 
   const fetchData = useCallback(async () => {
@@ -68,14 +85,14 @@ export default function App() {
     return p ?? []
   }, [])
 
-  useEffect(() => { fetchData() }, [fetchData])
+  useEffect(() => { if (user) fetchData() }, [fetchData, user])
 
   const handleAddOrEdit = async (name: string, stock: number, threshold: number, barcode: string, imageUrl: string) => {
     if (modal?.type === 'edit') {
       await supabase.from('products').update({ name, stock, threshold, barcode: barcode || null, image_url: imageUrl || null }).eq('id', modal.product.id)
       showToast(`「${name}」を更新しました`)
     } else {
-      await supabase.from('products').insert({ name, stock, threshold, barcode: barcode || null, image_url: imageUrl || null })
+      await supabase.from('products').insert({ name, stock, threshold, barcode: barcode || null, image_url: imageUrl || null, user_id: user?.id })
       showToast(`「${name}」を登録しました`)
     }
     setModal(null)
@@ -88,7 +105,7 @@ export default function App() {
     const newStock = product.stock - quantity
     await Promise.all([
       supabase.from('products').update({ stock: newStock }).eq('id', product.id),
-      supabase.from('usage_logs').insert({ product_id: product.id, quantity, note: note || null, type: 'use' }),
+      supabase.from('usage_logs').insert({ product_id: product.id, quantity, note: note || null, type: 'use', user_id: user?.id }),
     ])
     setModal(null)
     await fetchData()
@@ -104,7 +121,7 @@ export default function App() {
     const newStock = product.stock + quantity
     await Promise.all([
       supabase.from('products').update({ stock: newStock }).eq('id', product.id),
-      supabase.from('usage_logs').insert({ product_id: product.id, quantity, note: note || null, type: 'restock' }),
+      supabase.from('usage_logs').insert({ product_id: product.id, quantity, note: note || null, type: 'restock', user_id: user?.id }),
     ])
     setModal(null)
     fetchData()
@@ -122,7 +139,7 @@ export default function App() {
   const handleCreateOrder = async (quantity: number) => {
     if (modal?.type !== 'orderCreate') return
     const product = modal.product
-    await supabase.from('orders').insert({ product_id: product.id, quantity, status: '発注中' })
+    await supabase.from('orders').insert({ product_id: product.id, quantity, status: '発注中', user_id: user?.id })
     setModal(null)
     fetchData()
     showToast(`「${product.name}」${quantity}本 発注しました`)
@@ -139,7 +156,7 @@ export default function App() {
     if (product) {
       ps.push(
         supabase.from('products').update({ stock: product.stock + order.quantity }).eq('id', product.id).then(() => {}),
-        supabase.from('usage_logs').insert({ product_id: product.id, quantity: order.quantity, note: '発注品受け取り', type: 'restock' }).then(() => {}),
+        supabase.from('usage_logs').insert({ product_id: product.id, quantity: order.quantity, note: '発注品受け取り', type: 'restock', user_id: user?.id }).then(() => {}),
       )
     }
     await Promise.all(ps)
@@ -156,7 +173,7 @@ export default function App() {
       )
       showToast(`レシピ「${name}」を更新しました`)
     } else {
-      const { data } = await supabase.from('recipes').insert({ name, memo: memo || null }).select().single()
+      const { data } = await supabase.from('recipes').insert({ name, memo: memo || null, user_id: user?.id }).select().single()
       if (data) {
         await supabase.from('recipe_items').insert(
           items.map(i => ({ recipe_id: data.id, product_id: i.product_id, quantity: Number(i.quantity), unit: i.unit, note: i.note || null }))
@@ -218,6 +235,16 @@ export default function App() {
     return `${d.getMonth() + 1}/${d.getDate()}`
   }
 
+  // 初期化中
+  if (user === undefined) return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100dvh', background: '#f7f7f9' }}>
+      <div style={{ width: 32, height: 32, border: '3px solid #eee', borderTop: '3px solid #ef3c71', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
+    </div>
+  )
+
+  // 未ログイン
+  if (!user) return <AuthScreen />
+
   return (
     <div style={s.page}>
       <header style={s.header}>
@@ -231,6 +258,7 @@ export default function App() {
         <div style={s.headerRight}>
           <button style={s.iconBtn} onClick={() => setModal({ type: 'history' })}>📋</button>
           <button style={s.iconBtn} onClick={() => setModal({ type: 'stockCount' })}>📷</button>
+          <button style={s.iconBtn} onClick={handleLogout} title="ログアウト">🚪</button>
         </div>
       </header>
 
