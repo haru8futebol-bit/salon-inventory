@@ -9,9 +9,10 @@ interface Props {
   products: Product[]
   onClose: () => void
   onSave: (name: string, stock: number, threshold: number, barcode: string, imageUrl: string) => Promise<void>
+  onDelete?: (product: Product) => Promise<void>
 }
 
-export default function ProductModal({ product, products, onClose, onSave }: Props) {
+export default function ProductModal({ product, products, onClose, onSave, onDelete }: Props) {
   const [name, setName] = useState('')
   const [stock, setStock] = useState('')
   const [threshold, setThreshold] = useState('')
@@ -189,6 +190,9 @@ export default function ProductModal({ product, products, onClose, onSave }: Pro
             {loading ? '保存中...' : product ? '変更を保存' : '登録する'}
           </button>
           <button style={s.cancelBtn} onClick={onClose}>キャンセル</button>
+          {product && onDelete && (
+            <button style={s.deleteBtn} onClick={() => onDelete(product)}>🗑 この薬剤を削除</button>
+          )}
         </div>
       </div>
 
@@ -246,6 +250,10 @@ const s: Record<string, React.CSSProperties> = {
   },
   cancelBtn: {
     width: '100%', padding: '13px', borderRadius: 12, fontSize: 15, fontWeight: 600,
-    background: '#f1f0f7', color: '#888',
+    background: '#f1f0f7', color: '#888', marginBottom: 10,
+  },
+  deleteBtn: {
+    width: '100%', padding: '13px', borderRadius: 12, fontSize: 14, fontWeight: 600,
+    background: '#fee2e2', color: '#ef3c71',
   },
 }

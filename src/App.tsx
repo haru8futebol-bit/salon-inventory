@@ -437,12 +437,7 @@ export default function App() {
       {toast && <div style={s.toast}>{toast}</div>}
 
       {(modal?.type === 'add' || modal?.type === 'edit') && (
-        <ProductModal product={modal.type === 'edit' ? modal.product : null} products={products} onClose={() => setModal(null)} onSave={handleAddOrEdit} />
-      )}
-      {modal?.type === 'edit' && (
-        <div style={s.deleteFloat}>
-          <button style={s.deleteFloatBtn} onClick={() => handleDelete(modal.product)}>🗑 削除</button>
-        </div>
+        <ProductModal product={modal.type === 'edit' ? modal.product : null} products={products} onClose={() => setModal(null)} onSave={handleAddOrEdit} onDelete={handleDelete} />
       )}
       {modal?.type === 'use' && <UsageModal product={modal.product} onClose={() => setModal(null)} onSave={handleUse} />}
       {modal?.type === 'restock' && <RestockModal product={modal.product} onClose={() => setModal(null)} onSave={handleRestock} />}
