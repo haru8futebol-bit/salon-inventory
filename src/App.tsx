@@ -13,6 +13,7 @@ import RecipeListModal from './components/RecipeListModal'
 import OrderCreateModal from './components/OrderCreateModal'
 import AuthScreen from './components/AuthScreen'
 import ProfileModal from './components/ProfileModal'
+import ResetPasswordScreen from './components/ResetPasswordScreen'
 
 type Modal =
   | { type: 'add' }
@@ -44,6 +45,7 @@ async function sendLineNotification(message: string) {
 
 export default function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined)
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState(false)
   const [profile, setProfile] = useState<{ salon_name: string; avatar_url: string } | null>(null)
   const [products, setProducts] = useState<Product[]>([])
   const [logs, setLogs] = useState<UsageLog[]>([])
@@ -57,8 +59,14 @@ export default function App() {
   // セッション監視（自動ログイン：localStorageにセッションが残っていれば自動復元）
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setUser(data.session?.user ?? null))
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === 'PASSWORD_RECOVERY') {
+        setIsPasswordRecovery(true)
+        setUser(session?.user ?? null)
+      } else {
+        setIsPasswordRecovery(false)
+        setUser(session?.user ?? null)
+      }
     })
     return () => subscription.unsubscribe()
   }, [])
@@ -252,6 +260,9 @@ export default function App() {
       <div style={{ width: 32, height: 32, border: '3px solid #eee', borderTop: '3px solid #ef3c71', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
     </div>
   )
+
+  // パスワードリセット画面
+  if (isPasswordRecovery) return <ResetPasswordScreen onDone={() => setIsPasswordRecovery(false)} />
 
   // 未ログイン
   if (!user) return <AuthScreen />
